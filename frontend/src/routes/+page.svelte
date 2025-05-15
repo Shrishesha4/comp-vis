@@ -214,26 +214,40 @@
 
   // Draw detection boxes on a canvas context
   function drawDetectionBoxes(context: CanvasRenderingContext2D, detections: any[]) {
+    // Get canvas dimensions for potential scaling
+    const canvasWidth = context.canvas.width;
+    const canvasHeight = context.canvas.height;
+    
     // Draw detection boxes
     detections.forEach(detection => {
       const [x, y, width, height] = detection.bbox;
       const hasHelmet = detection.has_helmet;
       
-      // Set box style based on helmet detection
+      // Ensure coordinates are integers to prevent blurry lines
+      const boxX = Math.round(x);
+      const boxY = Math.round(y);
+      const boxWidth = Math.round(width);
+      const boxHeight = Math.round(height);
+    
       context.strokeStyle = hasHelmet ? '#10b981' : '#ef4444';
       context.lineWidth = 3;
-      context.strokeRect(x, y, width, height);
+      context.strokeRect(boxX, boxY, boxWidth, boxHeight);
       
-      // Add label background
       const text = `${hasHelmet ? 'Helmet' : 'No Helmet'} (${Math.round(detection.confidence * 100)}%)`;
-      const textWidth = context.measureText(text).width + 10;
+      const textMetrics = context.measureText(text);
+      const textWidth = textMetrics.width + 10;
+      const textHeight = 20;
+      
+      const labelX = Math.min(boxX, canvasWidth - textWidth);
+      const labelY = Math.max(boxY - 25, textHeight);
+      
       context.fillStyle = hasHelmet ? 'rgba(16, 185, 129, 0.7)' : 'rgba(239, 68, 68, 0.7)';
-      context.fillRect(x, y - 25, textWidth, 20);
+      context.fillRect(labelX, labelY - textHeight, textWidth, textHeight);
       
       // Add label text
       context.fillStyle = 'white';
       context.font = 'bold 14px Arial';
-      context.fillText(text, x + 5, y - 10);
+      context.fillText(text, labelX + 5, labelY - 5);
     });
   }
 
