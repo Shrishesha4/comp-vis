@@ -1,10 +1,13 @@
 import os
 import cv2
 import numpy as np
+import time
+import uuid
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
 import io
+import tempfile
 from helmet_detector import HelmetDetectionModel
 
 # Initialize Flask app
@@ -22,7 +25,8 @@ def index():
         'status': 'ok',
         'message': 'Helmet Detection API is running',
         'endpoints': {
-            '/process': 'POST - Process an image for helmet detection'
+            '/process': 'POST - Process an image for helmet detection',
+            '/process-video': 'POST - Process a video for helmet detection'
         }
     })
 
@@ -34,8 +38,13 @@ def process_image():
     # Get image file from request
     file = request.files['image']
     
+    # Read image data once and store it
+    file_data = file.read()
+    if not file_data:
+        return jsonify({'error': 'Empty image data'}), 400
+        
     # Read image using PIL
-    img = Image.open(io.BytesIO(file.read()))
+    img = Image.open(io.BytesIO(file_data))
     
     # Convert PIL image to OpenCV format
     open_cv_image = np.array(img)
@@ -66,6 +75,99 @@ def process_image():
         'detections': detections,
         'count': len(detections)
     })
+
+@app.route('/process-video', methods=['POST'])
+def process_video():
+    if 'video' not in request.files:
+        return jsonify({'error': 'No video provided'}), 400
+    
+    # Get video file from request
+    file = request.files['video']
+    
+    # Create a temporary file to save the uploaded video
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
+        file.save(temp_file.name)
+        video_path = temp_file.name
+    
+    try:
+        # Open the video file
+        cap = cv2.VideoCapture(video_path)
+        
+        if not cap.isOpened():
+            return jsonify({'error': 'Could not open video file'}), 400
+        
+        # Get video properties
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # Process only a subset of frames to improve performance
+        # For example, process 1 frame per second
+        frame_interval = max(1, int(fps))
+        
+        all_detections = []
+        frame_number = 0
+        
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            # Process only every nth frame
+            if frame_number % frame_interval == 0:
+                # Preprocess the frame
+                # 1. Resize if too large
+                max_dim = 1024
+                h, w = frame.shape[:2]
+                if max(h, w) > max_dim:
+                    scale = max_dim / max(h, w)
+                    frame = cv2.resize(frame, None, fx=scale, fy=scale)
+                
+                # 2. Apply contrast enhancement
+                lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+                l, a, b = cv2.split(lab)
+                clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+                cl = clahe.apply(l)
+                enhanced_lab = cv2.merge((cl, a, b))
+                enhanced_frame = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+                
+                # Process frame with model
+                detections = model.detect(enhanced_frame)
+                
+                # Add frame number to detections
+                for detection in detections:
+                    detection['frame'] = frame_number
+                
+                all_detections.extend(detections)
+            
+            frame_number += 1
+        
+        cap.release()
+        
+        # Calculate statistics
+        total_people = len(all_detections)
+        people_with_helmets = sum(1 for d in all_detections if d['has_helmet'])
+        people_without_helmets = total_people - people_with_helmets
+        
+        # Clean up the temporary file
+        os.unlink(video_path)
+        
+        return jsonify({
+            'detections': all_detections,
+            'total_frames': frame_count,
+            'processed_frames': frame_number // frame_interval,
+            'statistics': {
+                'total_people': total_people,
+                'people_with_helmets': people_with_helmets,
+                'people_without_helmets': people_without_helmets,
+                'helmet_percentage': (people_with_helmets / total_people * 100) if total_people > 0 else 0
+            }
+        })
+    
+    except Exception as e:
+        # Clean up the temporary file in case of error
+        if os.path.exists(video_path):
+            os.unlink(video_path)
+        return jsonify({'error': str(e)}), 500
 
 # Add a route for collecting training data
 @app.route('/collect', methods=['POST'])
